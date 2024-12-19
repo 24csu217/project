@@ -30,10 +30,6 @@ typedef struct {
     GtkWidget *progress_bar;
     double monthly_budget;
     double current_spend;
-    GtkWidget *edit_button;
-    GtkWidget *delete_button;
-    GtkTreeSelection *selection;
-    gint selected_expense_id;
 } AppData;
 
 // Color definitions for pie charts
@@ -78,10 +74,6 @@ static void init_analytics_section(AppData *app, GtkWidget *main_box);
 static gboolean draw_category_chart(GtkWidget *widget, cairo_t *cr, AppData *app);
 static gboolean draw_payment_chart(GtkWidget *widget, cairo_t *cr, AppData *app);
 static void init_form_section(AppData *app, GtkWidget *main_box);
-static void on_expense_selected(GtkTreeSelection *selection, AppData *app);
-static void edit_expense(GtkButton *button, AppData *app);
-static void delete_expense(GtkButton *button, AppData *app);
-static void show_edit_dialog(AppData *app, gint expense_id);
 
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
@@ -335,55 +327,19 @@ static void search_changed(GtkSearchEntry *entry, AppData *app) {
 }
 
 static void update_expense_list(AppData *app, const gchar *category, const gchar *search_text) {
-    sqlite3_stmt *stmt;
-    const char *count_sql;
-    const char *sql;
-    int items_per_page = 15;
-    int offset = (app->current_page - 1) * items_per_page;
-    
-    // First, get total count for pagination
+    const char *base_sql;
     if (g_strcmp0(category, "All") == 0) {
-        count_sql = "SELECT COUNT(*) FROM expenses WHERE description LIKE ?";
-        sql = "SELECT * FROM expenses WHERE description LIKE ? ORDER BY date DESC LIMIT ? OFFSET ?";
+        base_sql = "SELECT id, amount, description, category, payment_type, date "
+                  "FROM expenses WHERE (description LIKE ? OR category LIKE ?) "
+                  "ORDER BY date DESC LIMIT ? OFFSET ?";
     } else {
-        count_sql = "SELECT COUNT(*) FROM expenses WHERE category = ? AND description LIKE ?";
-        sql = "SELECT * FROM expenses WHERE category = ? AND description LIKE ? ORDER BY date DESC LIMIT ? OFFSET ?";
+        base_sql = "SELECT id, amount, description, category, payment_type, date "
+                  "FROM expenses WHERE category = ? AND (description LIKE ?) "
+                  "ORDER BY date DESC LIMIT ? OFFSET ?";
     }
 
-    // Get total count
-    sqlite3_stmt *count_stmt;
-    int rc = sqlite3_prepare_v2(app->db, count_sql, -1, &count_stmt, NULL);
-    if (rc == SQLITE_OK) {
-        char search_pattern[256];
-        g_snprintf(search_pattern, sizeof(search_pattern), "%%%s%%", search_text ? search_text : "");
-        
-        if (g_strcmp0(category, "All") == 0) {
-            sqlite3_bind_text(count_stmt, 1, search_pattern, -1, SQLITE_STATIC);
-        } else {
-            sqlite3_bind_text(count_stmt, 1, category, -1, SQLITE_STATIC);
-            sqlite3_bind_text(count_stmt, 2, search_pattern, -1, SQLITE_STATIC);
-        }
-        
-        if (sqlite3_step(count_stmt) == SQLITE_ROW) {
-            int total_items = sqlite3_column_int(count_stmt, 0);
-            app->total_pages = (total_items + items_per_page - 1) / items_per_page;
-            if (app->total_pages < 1) app->total_pages = 1;
-            
-            // Update page label
-            char page_text[32];
-            g_snprintf(page_text, sizeof(page_text), "Page %d of %d", app->current_page, app->total_pages);
-            gtk_label_set_text(GTK_LABEL(app->page_label), page_text);
-            
-            // Update button sensitivity
-            gtk_widget_set_sensitive(app->prev_button, app->current_page > 1);
-            gtk_widget_set_sensitive(app->next_button, app->current_page < app->total_pages);
-        }
-        sqlite3_finalize(count_stmt);
-    }
-
-    // Get paginated results
-    rc = sqlite3_prepare_v2(app->db, sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(app->db, base_sql, -1, &stmt, NULL) != SQLITE_OK) {
         g_print("Failed to prepare statement: %s\n", sqlite3_errmsg(app->db));
         return;
     }
@@ -398,23 +354,28 @@ static void update_expense_list(AppData *app, const gchar *category, const gchar
     int param_index = 1;
     if (g_strcmp0(category, "All") == 0) {
         sqlite3_bind_text(stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
     } else {
         sqlite3_bind_text(stmt, param_index++, category, -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
     }
+
+    const int items_per_page = 15;
+    int offset = (app->current_page - 1) * items_per_page;
     sqlite3_bind_int(stmt, param_index++, items_per_page);
     sqlite3_bind_int(stmt, param_index++, offset);
 
-    // Populate list store with filtered results
+    // Populate list store
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         GtkTreeIter iter;
         gtk_list_store_append(app->expense_store, &iter);
         gtk_list_store_set(app->expense_store, &iter,
-            0, sqlite3_column_text(stmt, 1),  // amount
-            1, sqlite3_column_text(stmt, 2),  // description
-            2, sqlite3_column_text(stmt, 3),  // category
-            3, sqlite3_column_text(stmt, 4),  // payment_type
-            4, sqlite3_column_text(stmt, 5),  // date
+            0, sqlite3_column_int(stmt, 0),    // ID
+            1, sqlite3_column_text(stmt, 1),   // amount
+            2, sqlite3_column_text(stmt, 2),   // description
+            3, sqlite3_column_text(stmt, 3),   // category
+            4, sqlite3_column_text(stmt, 4),   // payment_type
+            5, sqlite3_column_text(stmt, 5),   // date
             -1);
     }
 
@@ -472,8 +433,9 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
                                  GTK_POLICY_AUTOMATIC);
     gtk_widget_set_size_request(scrolled_window, -1, 300);
 
-    // Create list store for the table
-    app->expense_store = gtk_list_store_new(5, 
+    // Create list store with ID column (hidden)
+    app->expense_store = gtk_list_store_new(6,  // 6 columns instead of 5
+        G_TYPE_INT,     // ID (hidden)
         G_TYPE_STRING,  // Amount
         G_TYPE_STRING,  // Description
         G_TYPE_STRING,  // Category
@@ -484,7 +446,7 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
     // Create tree view
     app->expense_table = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app->expense_store));
 
-    // Create columns
+    // Create columns (ID column is not displayed)
     const char *titles[] = {"Amount", "Description", "Category", "Payment Type", "Date"};
     for (int i = 0; i < 5; i++) {
         GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
@@ -519,40 +481,6 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
 
     // Initial load of expenses
     update_expense_list(app, "All", "");
-
-    // Add selection
-    app->selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(app->expense_table));
-    gtk_tree_selection_set_mode(app->selection, GTK_SELECTION_SINGLE);
-    g_signal_connect(G_OBJECT(app->selection), "changed", G_CALLBACK(on_expense_selected), app);
-
-    // Create action buttons box (next to pagination)
-    GtkWidget *action_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-    
-    // Create edit and delete buttons (initially insensitive)
-    app->edit_button = gtk_button_new_with_label("Edit");
-    app->delete_button = gtk_button_new_with_label("Delete");
-    gtk_widget_set_sensitive(app->edit_button, FALSE);
-    gtk_widget_set_sensitive(app->delete_button, FALSE);
-
-    // Style delete button (red)
-    GtkStyleContext *delete_context = gtk_widget_get_style_context(app->delete_button);
-    gtk_style_context_add_class(delete_context, "destructive-action");
-
-    // Pack buttons into action box
-    gtk_box_pack_start(GTK_BOX(action_box), app->edit_button, FALSE, FALSE, 5);
-    gtk_box_pack_start(GTK_BOX(action_box), app->delete_button, FALSE, FALSE, 5);
-
-    // Add pagination and action buttons to a common box
-    GtkWidget *controls_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_box_pack_start(GTK_BOX(controls_box), app->pagination_box, FALSE, FALSE, 5);
-    gtk_box_pack_end(GTK_BOX(controls_box), action_box, FALSE, FALSE, 5);
-
-    // Connect button signals
-    g_signal_connect(app->edit_button, "clicked", G_CALLBACK(edit_expense), app);
-    g_signal_connect(app->delete_button, "clicked", G_CALLBACK(delete_expense), app);
-
-    // Pack controls box
-    gtk_box_pack_start(GTK_BOX(main_box), controls_box, FALSE, FALSE, 5);
 }
 
 static void prev_page(GtkButton *button, AppData *app) {
