@@ -92,24 +92,11 @@ int main(int argc, char *argv[]) {
     app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(app.window), "Expense Tracker");
     gtk_window_set_default_size(GTK_WINDOW(app.window), 1200, 800);
+    gtk_container_set_border_width(GTK_CONTAINER(app.window), 4);
 
-    // Create the main scrolled window with proper policies
-    GtkWidget *main_scrolled_window = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(main_scrolled_window),
-                                 GTK_POLICY_AUTOMATIC,
-                                 GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(app.window), main_scrolled_window);
-
-    // Create the main box that will hold all content
+    // Create main vertical box
     GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_widget_set_vexpand(main_box, TRUE);
-    gtk_widget_set_valign(main_box, GTK_ALIGN_START);
-    gtk_container_set_border_width(GTK_CONTAINER(main_box), 10);
-
-    // Create a viewport and add the main box to it
-    GtkWidget *viewport = gtk_viewport_new(NULL, NULL);
-    gtk_container_add(GTK_CONTAINER(viewport), main_box);
-    gtk_container_add(GTK_CONTAINER(main_scrolled_window), viewport);
+    gtk_container_add(GTK_CONTAINER(app.window), main_box);
 
     // Initialize database
     if (sqlite3_open("expenses.db", &app.db) != SQLITE_OK) {
@@ -118,27 +105,29 @@ int main(int argc, char *argv[]) {
     }
     init_database(app.db);
 
-    // Initialize all sections
-    init_form_section(&app, main_box);
-    init_filter_section(&app, main_box);
-    init_expense_table(&app, main_box);
-    init_budget_section(&app, main_box);
-    init_analytics_section(&app, main_box);
+    // Initialize all sections in order
+    init_form_section(&app, main_box);           // Your existing form section
+    init_filter_section(&app, main_box);         // Filter and search section
+    init_expense_table(&app, main_box);          // Expense table with pagination
+    init_budget_section(&app, main_box);         // Budget section
+    init_analytics_section(&app, main_box);      // Pie charts
 
     // Connect signals
     g_signal_connect(app.window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-
+    
     // Show all widgets
     gtk_widget_show_all(app.window);
-
-    // Initial updates
+    
+    // Initial update of all components
     update_expense_list(&app, "All", "");
     update_budget_progress(&app);
     update_charts(&app);
-
+    
     gtk_main();
-
+    
+    // Cleanup
     sqlite3_close(app.db);
+    
     return 0;
 }
 
@@ -445,20 +434,12 @@ static void export_to_excel(GtkButton *button, AppData *app) {
 }
 
 static void init_expense_table(AppData *app, GtkWidget *main_box) {
-    // Create frame for expenses section
-    GtkWidget *frame = gtk_frame_new("Expenses");
-    gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_ETCHED_IN);
-    
-    // Create box for expense section
-    GtkWidget *expense_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_container_set_border_width(GTK_CONTAINER(expense_box), 5);
-    
-    // Create scrolled window for table with fixed height
-    GtkWidget *table_scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(table_scroll),
+    // Create a scrolled window to contain the table
+    GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window),
                                  GTK_POLICY_AUTOMATIC,
                                  GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_size_request(table_scroll, -1, 300);  // Fixed height for table
+    gtk_widget_set_size_request(scrolled_window, -1, 300);
 
     // Create list store with ID column (hidden)
     app->expense_store = gtk_list_store_new(6,  // 6 columns instead of 5
@@ -484,7 +465,7 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
     }
 
     // Add table to scrolled window
-    gtk_container_add(GTK_CONTAINER(table_scroll), app->expense_table);
+    gtk_container_add(GTK_CONTAINER(scrolled_window), app->expense_table);
 
     // Create pagination controls
     app->pagination_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
@@ -498,8 +479,8 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
     gtk_box_pack_start(GTK_BOX(app->pagination_box), app->next_button, FALSE, FALSE, 5);
 
     // Add to main box
-    gtk_box_pack_start(GTK_BOX(expense_box), table_scroll, TRUE, TRUE, 5);
-    gtk_box_pack_start(GTK_BOX(expense_box), app->pagination_box, FALSE, FALSE, 5);
+    gtk_box_pack_start(GTK_BOX(main_box), scrolled_window, TRUE, TRUE, 5);
+    gtk_box_pack_start(GTK_BOX(main_box), app->pagination_box, FALSE, FALSE, 5);
 
     // Connect pagination signals
     g_signal_connect(app->prev_button, "clicked", G_CALLBACK(prev_page), app);
@@ -507,9 +488,6 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
 
     // Initial load of expenses
     update_expense_list(app, "All", "");
-
-    // Add expense box to main box
-    gtk_box_pack_start(GTK_BOX(main_box), expense_box, TRUE, TRUE, 5);
 }
 
 static void prev_page(GtkButton *button, AppData *app) {
@@ -531,11 +509,9 @@ static void next_page(GtkButton *button, AppData *app) {
 }
 
 static void init_budget_section(AppData *app, GtkWidget *main_box) {
-    GtkWidget *budget_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_widget_set_margin_top(budget_box, 10);
-    gtk_widget_set_margin_bottom(budget_box, 10);
-    gtk_container_set_border_width(GTK_CONTAINER(budget_box), 10);
-
+    // Create horizontal box for budget section
+    GtkWidget *budget_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    
     // Create label
     GtkWidget *budget_label = gtk_label_new("Set Monthly Budget:");
     
@@ -708,14 +684,11 @@ static void update_budget_progress(AppData *app) {
 }
 
 static void init_analytics_section(AppData *app, GtkWidget *main_box) {
+    // Create horizontal box for charts
     GtkWidget *charts_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 20);
     gtk_widget_set_margin_top(charts_box, 10);
     gtk_widget_set_margin_bottom(charts_box, 10);
-
-    // Set fixed sizes for charts
-    gtk_widget_set_size_request(app->category_chart, 400, 300);
-    gtk_widget_set_size_request(app->payment_chart, 400, 300);
-
+    
     // Create frames for each chart
     GtkWidget *category_frame = gtk_frame_new("Spending by Category");
     GtkWidget *payment_frame = gtk_frame_new("Spending by Payment Mode");
