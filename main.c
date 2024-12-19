@@ -74,6 +74,7 @@ static void init_analytics_section(AppData *app, GtkWidget *main_box);
 static gboolean draw_category_chart(GtkWidget *widget, cairo_t *cr, AppData *app);
 static gboolean draw_payment_chart(GtkWidget *widget, cairo_t *cr, AppData *app);
 static void init_form_section(AppData *app, GtkWidget *main_box);
+static void update_all_displays(AppData *app);
 
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
@@ -86,9 +87,16 @@ int main(int argc, char *argv[]) {
     gtk_window_set_default_size(GTK_WINDOW(app.window), 1200, 800);
     gtk_container_set_border_width(GTK_CONTAINER(app.window), 4);
 
+    // Create a scrolled window as the main container
+    GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window),
+                                 GTK_POLICY_AUTOMATIC,
+                                 GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(app.window), scrolled_window);
+
     // Create main vertical box
     GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_add(GTK_CONTAINER(app.window), main_box);
+    gtk_container_add(GTK_CONTAINER(scrolled_window), main_box);
 
     // Initialize database
     if (sqlite3_open("expenses.db", &app.db) != SQLITE_OK) {
@@ -265,6 +273,9 @@ static void add_expense(GtkButton *button, AppData *app) {
     
     // Finalize statement
     sqlite3_finalize(stmt);
+
+    // After successfully adding the expense
+    update_all_displays(app);
 }
 
 static void init_filter_section(AppData *app, GtkWidget *main_box) {
