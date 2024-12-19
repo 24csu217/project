@@ -30,6 +30,9 @@ typedef struct {
     GtkWidget *progress_bar;
     double monthly_budget;
     double current_spend;
+    GtkTreeSelection *selection;
+    gint selected_expense_id;
+    GtkTreeIter selected_iter;
 } AppData;
 
 // Color definitions for pie charts
@@ -76,6 +79,9 @@ static gboolean draw_payment_chart(GtkWidget *widget, cairo_t *cr, AppData *app)
 static void init_form_section(AppData *app, GtkWidget *main_box);
 static gboolean show_edit_dialog(AppData *app, gint expense_id);
 static void edit_expense(GtkButton *button, AppData *app);
+static void delete_expense(GtkButton *button, AppData *app);
+static void reset_selection(AppData *app);
+static void on_expense_selected(GtkTreeSelection *selection, AppData *app);
 
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
@@ -903,37 +909,35 @@ static void on_expense_selected(GtkTreeSelection *selection, AppData *app) {
     GtkTreeModel *model;
     GtkTreeIter iter;
 
+    // Reset the selected ID
+    app->selected_expense_id = -1;
+    
     if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
+        // Store the selected iterator
+        app->selected_iter = iter;
+        
+        // Get the ID from the model
+        gint id;
+        gtk_tree_model_get(model, &iter, 0, &id, -1);
+        app->selected_expense_id = id;
+        
         // Enable buttons
         gtk_widget_set_sensitive(app->edit_button, TRUE);
         gtk_widget_set_sensitive(app->delete_button, TRUE);
-
-        // Get the ID directly from the model
-        gtk_tree_model_get(model, &iter, 
-            0, &app->selected_expense_id,  // Get ID from column 0
-            -1);
+        
+        g_print("Selected expense ID: %d\n", id); // Debug print
     } else {
-        // Disable buttons
+        // Disable buttons if nothing is selected
         gtk_widget_set_sensitive(app->edit_button, FALSE);
         gtk_widget_set_sensitive(app->delete_button, FALSE);
-        app->selected_expense_id = -1;
-    }
-}
-
-static void edit_expense(GtkButton *button, AppData *app) {
-    if (app->selected_expense_id < 0) return;
-    
-    if (show_edit_dialog(app, app->selected_expense_id)) {
-        // Update all displays only if edit was successful
-        update_expense_list(app, "All", "");
-        update_budget_progress(app);
-        update_charts(app);
-        reset_selection(app);
     }
 }
 
 static void delete_expense(GtkButton *button, AppData *app) {
-    if (app->selected_expense_id < 0) return;
+    if (app->selected_expense_id < 0) {
+        g_print("No expense selected for deletion\n");
+        return;
+    }
 
     GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(app->window),
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
@@ -952,15 +956,26 @@ static void delete_expense(GtkButton *button, AppData *app) {
             sqlite3_bind_int(stmt, 1, app->selected_expense_id);
             
             if (sqlite3_step(stmt) == SQLITE_DONE) {
+                // Remove from tree view
+                gtk_list_store_remove(app->expense_store, &app->selected_iter);
+                
                 // Reset selection
                 app->selected_expense_id = -1;
                 gtk_widget_set_sensitive(app->edit_button, FALSE);
                 gtk_widget_set_sensitive(app->delete_button, FALSE);
                 
                 // Update displays
-                update_expense_list(app, "All", "");
                 update_budget_progress(app);
                 update_charts(app);
+                
+                // Show success message
+                GtkWidget *success_dialog = gtk_message_dialog_new(GTK_WINDOW(app->window),
+                    GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                    GTK_MESSAGE_INFO,
+                    GTK_BUTTONS_OK,
+                    "Expense deleted successfully!");
+                gtk_dialog_run(GTK_DIALOG(success_dialog));
+                gtk_widget_destroy(success_dialog);
             }
             
             sqlite3_finalize(stmt);
@@ -968,14 +983,12 @@ static void delete_expense(GtkButton *button, AppData *app) {
     }
 }
 
-static void reset_selection(AppData *app) {
-    app->selected_expense_id = -1;
-    gtk_widget_set_sensitive(app->edit_button, FALSE);
-    gtk_widget_set_sensitive(app->delete_button, FALSE);
-    gtk_tree_selection_unselect_all(app->selection);
-}
-
-static gboolean show_edit_dialog(AppData *app, gint expense_id) {
+static void edit_expense(GtkButton *button, AppData *app) {
+    if (app->selected_expense_id < 0) {
+        g_print("No expense selected for editing\n");
+        return;
+    }
+    
     GtkWidget *dialog = gtk_dialog_new_with_buttons("Edit Expense",
         GTK_WINDOW(app->window),
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
@@ -995,7 +1008,6 @@ static gboolean show_edit_dialog(AppData *app, gint expense_id) {
     GtkWidget *description_entry = gtk_entry_new();
     GtkWidget *category_combo = gtk_combo_box_text_new();
     GtkWidget *payment_combo = gtk_combo_box_text_new();
-    GtkWidget *date_entry = gtk_entry_new(); // Add date entry
 
     // Add categories and payment types
     const char *categories[] = {"Food", "Transport", "Entertainment", "Bills", "Others"};
@@ -1008,40 +1020,32 @@ static gboolean show_edit_dialog(AppData *app, gint expense_id) {
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(payment_combo), payment_types[i]);
     }
 
-    // Get current expense data
-    sqlite3_stmt *stmt;
-    const char *sql = "SELECT amount, description, category, payment_type, date FROM expenses WHERE id = ?";
-    gchar *current_date = NULL;
-    
-    if (sqlite3_prepare_v2(app->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_int(stmt, 1, expense_id);
-        
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            char amount_str[32];
-            snprintf(amount_str, sizeof(amount_str), "%.2f", sqlite3_column_double(stmt, 0));
-            gtk_entry_set_text(GTK_ENTRY(amount_entry), amount_str);
-            gtk_entry_set_text(GTK_ENTRY(description_entry), (const char *)sqlite3_column_text(stmt, 1));
-            current_date = g_strdup((const char *)sqlite3_column_text(stmt, 4));
-            gtk_entry_set_text(GTK_ENTRY(date_entry), current_date);
-            
-            // Set combo box selections
-            const char *category = (const char *)sqlite3_column_text(stmt, 2);
-            const char *payment = (const char *)sqlite3_column_text(stmt, 3);
-            
-            for (int i = 0; i < 5; i++) {
-                if (g_strcmp0(categories[i], category) == 0) {
-                    gtk_combo_box_set_active(GTK_COMBO_BOX(category_combo), i);
-                    break;
-                }
-            }
-            for (int i = 0; i < 4; i++) {
-                if (g_strcmp0(payment_types[i], payment) == 0) {
-                    gtk_combo_box_set_active(GTK_COMBO_BOX(payment_combo), i);
-                    break;
-                }
-            }
+    // Get current values from the tree view
+    GtkTreeModel *model = GTK_TREE_MODEL(app->expense_store);
+    gchar *amount, *description, *category, *payment_type;
+    gtk_tree_model_get(model, &app->selected_iter,
+        1, &amount,
+        2, &description,
+        3, &category,
+        4, &payment_type,
+        -1);
+
+    // Set current values
+    gtk_entry_set_text(GTK_ENTRY(amount_entry), amount);
+    gtk_entry_set_text(GTK_ENTRY(description_entry), description);
+
+    // Set combo box selections
+    for (int i = 0; i < 5; i++) {
+        if (g_strcmp0(categories[i], category) == 0) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(category_combo), i);
+            break;
         }
-        sqlite3_finalize(stmt);
+    }
+    for (int i = 0; i < 4; i++) {
+        if (g_strcmp0(payment_types[i], payment_type) == 0) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(payment_combo), i);
+            break;
+        }
     }
 
     // Add fields to grid
@@ -1053,74 +1057,67 @@ static gboolean show_edit_dialog(AppData *app, gint expense_id) {
     gtk_grid_attach(GTK_GRID(grid), category_combo, 1, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Payment Type:"), 0, 3, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), payment_combo, 1, 3, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Date:"), 0, 4, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), date_entry, 1, 4, 1, 1);
 
     gtk_container_add(GTK_CONTAINER(content_area), grid);
     gtk_widget_show_all(dialog);
 
-    gboolean success = FALSE;
     // Handle response
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        const char *amount_str = gtk_entry_get_text(GTK_ENTRY(amount_entry));
-        const char *description = gtk_entry_get_text(GTK_ENTRY(description_entry));
-        const char *category = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(category_combo));
-        const char *payment_type = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(payment_combo));
-        const char *date = gtk_entry_get_text(GTK_ENTRY(date_entry));
+        const char *new_amount = gtk_entry_get_text(GTK_ENTRY(amount_entry));
+        const char *new_description = gtk_entry_get_text(GTK_ENTRY(description_entry));
+        const char *new_category = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(category_combo));
+        const char *new_payment_type = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(payment_combo));
 
-        // Validate input
-        if (strlen(amount_str) == 0 || strlen(description) == 0 || 
-            category == NULL || payment_type == NULL || strlen(date) == 0) {
-            GtkWidget *error_dialog = gtk_message_dialog_new(GTK_WINDOW(dialog),
-                GTK_DIALOG_MODAL,
-                GTK_MESSAGE_ERROR,
-                GTK_BUTTONS_OK,
-                "Please fill in all fields");
-            gtk_dialog_run(GTK_DIALOG(error_dialog));
-            gtk_widget_destroy(error_dialog);
-        } else {
-            // Update database
-            const char *update_sql = "UPDATE expenses SET amount = ?, description = ?, "
-                                   "category = ?, payment_type = ?, date = ? WHERE id = ?";
+        if (strlen(new_amount) > 0 && strlen(new_description) > 0 && 
+            new_category != NULL && new_payment_type != NULL) {
             
-            sqlite3_stmt *update_stmt;
-            if (sqlite3_prepare_v2(app->db, update_sql, -1, &update_stmt, NULL) == SQLITE_OK) {
-                sqlite3_bind_double(update_stmt, 1, atof(amount_str));
-                sqlite3_bind_text(update_stmt, 2, description, -1, SQLITE_STATIC);
-                sqlite3_bind_text(update_stmt, 3, category, -1, SQLITE_STATIC);
-                sqlite3_bind_text(update_stmt, 4, payment_type, -1, SQLITE_STATIC);
-                sqlite3_bind_text(update_stmt, 5, date, -1, SQLITE_STATIC);
-                sqlite3_bind_int(update_stmt, 6, expense_id);
+            // Update database
+            sqlite3_stmt *stmt;
+            const char *sql = "UPDATE expenses SET amount = ?, description = ?, "
+                            "category = ?, payment_type = ? WHERE id = ?";
+            
+            if (sqlite3_prepare_v2(app->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_double(stmt, 1, atof(new_amount));
+                sqlite3_bind_text(stmt, 2, new_description, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 3, new_category, -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 4, new_payment_type, -1, SQLITE_STATIC);
+                sqlite3_bind_int(stmt, 5, app->selected_expense_id);
                 
-                if (sqlite3_step(update_stmt) == SQLITE_DONE) {
-                    success = TRUE;
-                    GtkWidget *success_dialog = gtk_message_dialog_new(GTK_WINDOW(dialog),
-                        GTK_DIALOG_MODAL,
+                if (sqlite3_step(stmt) == SQLITE_DONE) {
+                    // Update tree view
+                    gtk_list_store_set(app->expense_store, &app->selected_iter,
+                        1, new_amount,
+                        2, new_description,
+                        3, new_category,
+                        4, new_payment_type,
+                        -1);
+                    
+                    // Update displays
+                    update_budget_progress(app);
+                    update_charts(app);
+                    
+                    // Show success message
+                    GtkWidget *success_dialog = gtk_message_dialog_new(GTK_WINDOW(app->window),
+                        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
                         GTK_MESSAGE_INFO,
                         GTK_BUTTONS_OK,
                         "Expense updated successfully!");
                     gtk_dialog_run(GTK_DIALOG(success_dialog));
                     gtk_widget_destroy(success_dialog);
-                } else {
-                    GtkWidget *error_dialog = gtk_message_dialog_new(GTK_WINDOW(dialog),
-                        GTK_DIALOG_MODAL,
-                        GTK_MESSAGE_ERROR,
-                        GTK_BUTTONS_OK,
-                        "Failed to update expense: %s", sqlite3_errmsg(app->db));
-                    gtk_dialog_run(GTK_DIALOG(error_dialog));
-                    gtk_widget_destroy(error_dialog);
                 }
                 
-                sqlite3_finalize(update_stmt);
+                sqlite3_finalize(stmt);
             }
         }
-
-        g_free((gchar *)category);
-        g_free((gchar *)payment_type);
+        
+        g_free((gchar *)new_category);
+        g_free((gchar *)new_payment_type);
     }
 
+    // Cleanup
+    g_free(amount);
+    g_free(description);
+    g_free(category);
+    g_free(payment_type);
     gtk_widget_destroy(dialog);
-    g_free(current_date);
-
-    return success;
 }
