@@ -92,11 +92,24 @@ int main(int argc, char *argv[]) {
     app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(app.window), "Expense Tracker");
     gtk_window_set_default_size(GTK_WINDOW(app.window), 1200, 800);
-    gtk_container_set_border_width(GTK_CONTAINER(app.window), 4);
 
-    // Create main vertical box
+    // Create the main scrolled window with proper policies
+    GtkWidget *main_scrolled_window = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(main_scrolled_window),
+                                 GTK_POLICY_AUTOMATIC,
+                                 GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(app.window), main_scrolled_window);
+
+    // Create the main box that will hold all content
     GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_add(GTK_CONTAINER(app.window), main_box);
+    gtk_widget_set_vexpand(main_box, TRUE);
+    gtk_widget_set_valign(main_box, GTK_ALIGN_START);
+    gtk_container_set_border_width(GTK_CONTAINER(main_box), 10);
+
+    // Create a viewport and add the main box to it
+    GtkWidget *viewport = gtk_viewport_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(viewport), main_box);
+    gtk_container_add(GTK_CONTAINER(main_scrolled_window), viewport);
 
     // Initialize database
     if (sqlite3_open("expenses.db", &app.db) != SQLITE_OK) {
@@ -105,29 +118,27 @@ int main(int argc, char *argv[]) {
     }
     init_database(app.db);
 
-    // Initialize all sections in order
-    init_form_section(&app, main_box);           // Your existing form section
-    init_filter_section(&app, main_box);         // Filter and search section
-    init_expense_table(&app, main_box);          // Expense table with pagination
-    init_budget_section(&app, main_box);         // Budget section
-    init_analytics_section(&app, main_box);      // Pie charts
+    // Initialize all sections
+    init_form_section(&app, main_box);
+    init_filter_section(&app, main_box);
+    init_expense_table(&app, main_box);
+    init_budget_section(&app, main_box);
+    init_analytics_section(&app, main_box);
 
     // Connect signals
     g_signal_connect(app.window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-    
+
     // Show all widgets
     gtk_widget_show_all(app.window);
-    
-    // Initial update of all components
+
+    // Initial updates
     update_expense_list(&app, "All", "");
     update_budget_progress(&app);
     update_charts(&app);
-    
+
     gtk_main();
-    
-    // Cleanup
+
     sqlite3_close(app.db);
-    
     return 0;
 }
 
@@ -434,12 +445,20 @@ static void export_to_excel(GtkButton *button, AppData *app) {
 }
 
 static void init_expense_table(AppData *app, GtkWidget *main_box) {
-    // Create a scrolled window to contain the table
-    GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window),
+    // Create frame for expenses section
+    GtkWidget *frame = gtk_frame_new("Expenses");
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_ETCHED_IN);
+    
+    // Create box for expense section
+    GtkWidget *expense_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_set_border_width(GTK_CONTAINER(expense_box), 5);
+    
+    // Create scrolled window for table with fixed height
+    GtkWidget *table_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(table_scroll),
                                  GTK_POLICY_AUTOMATIC,
                                  GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_size_request(scrolled_window, -1, 300);
+    gtk_widget_set_size_request(table_scroll, -1, 300);  // Fixed height for table
 
     // Create list store with ID column (hidden)
     app->expense_store = gtk_list_store_new(6,  // 6 columns instead of 5
@@ -465,7 +484,7 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
     }
 
     // Add table to scrolled window
-    gtk_container_add(GTK_CONTAINER(scrolled_window), app->expense_table);
+    gtk_container_add(GTK_CONTAINER(table_scroll), app->expense_table);
 
     // Create pagination controls
     app->pagination_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
@@ -479,8 +498,8 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
     gtk_box_pack_start(GTK_BOX(app->pagination_box), app->next_button, FALSE, FALSE, 5);
 
     // Add to main box
-    gtk_box_pack_start(GTK_BOX(main_box), scrolled_window, TRUE, TRUE, 5);
-    gtk_box_pack_start(GTK_BOX(main_box), app->pagination_box, FALSE, FALSE, 5);
+    gtk_box_pack_start(GTK_BOX(expense_box), table_scroll, TRUE, TRUE, 5);
+    gtk_box_pack_start(GTK_BOX(expense_box), app->pagination_box, FALSE, FALSE, 5);
 
     // Connect pagination signals
     g_signal_connect(app->prev_button, "clicked", G_CALLBACK(prev_page), app);
@@ -488,6 +507,9 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
 
     // Initial load of expenses
     update_expense_list(app, "All", "");
+
+    // Add expense box to main box
+    gtk_box_pack_start(GTK_BOX(main_box), expense_box, TRUE, TRUE, 5);
 }
 
 static void prev_page(GtkButton *button, AppData *app) {
@@ -509,9 +531,11 @@ static void next_page(GtkButton *button, AppData *app) {
 }
 
 static void init_budget_section(AppData *app, GtkWidget *main_box) {
-    // Create horizontal box for budget section
-    GtkWidget *budget_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-    
+    GtkWidget *budget_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_widget_set_margin_top(budget_box, 10);
+    gtk_widget_set_margin_bottom(budget_box, 10);
+    gtk_container_set_border_width(GTK_CONTAINER(budget_box), 10);
+
     // Create label
     GtkWidget *budget_label = gtk_label_new("Set Monthly Budget:");
     
@@ -684,11 +708,14 @@ static void update_budget_progress(AppData *app) {
 }
 
 static void init_analytics_section(AppData *app, GtkWidget *main_box) {
-    // Create horizontal box for charts
     GtkWidget *charts_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 20);
     gtk_widget_set_margin_top(charts_box, 10);
     gtk_widget_set_margin_bottom(charts_box, 10);
-    
+
+    // Set fixed sizes for charts
+    gtk_widget_set_size_request(app->category_chart, 400, 300);
+    gtk_widget_set_size_request(app->payment_chart, 400, 300);
+
     // Create frames for each chart
     GtkWidget *category_frame = gtk_frame_new("Spending by Category");
     GtkWidget *payment_frame = gtk_frame_new("Spending by Payment Mode");
@@ -1121,140 +1148,3 @@ static void edit_expense(GtkButton *button, AppData *app) {
     g_free(payment_type);
     gtk_widget_destroy(dialog);
 }
-
--- Drop existing tables if they exist
-DROP TABLE IF EXISTS expenses;
-DROP TABLE IF EXISTS budget;
-DROP TABLE IF EXISTS categories;
-DROP TABLE IF EXISTS payment_types;
-
--- Create categories table
-CREATE TABLE categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
-);
-
--- Insert default categories
-INSERT INTO categories (name) VALUES 
-    ('Food'),
-    ('Transport'),
-    ('Entertainment'),
-    ('Bills'),
-    ('Others');
-
--- Create payment_types table
-CREATE TABLE payment_types (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
-);
-
--- Insert default payment types
-INSERT INTO payment_types (name) VALUES 
-    ('Cash'),
-    ('Credit Card'),
-    ('Debit Card'),
-    ('UPI');
-
--- Create expenses table
-CREATE TABLE expenses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    amount REAL NOT NULL CHECK (amount > 0),
-    description TEXT NOT NULL,
-    category TEXT NOT NULL,
-    payment_type TEXT NOT NULL,
-    date TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d', 'now', 'localtime')),
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (category) REFERENCES categories(name),
-    FOREIGN KEY (payment_type) REFERENCES payment_types(name)
-);
-
--- Create budget table
-CREATE TABLE budget (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    amount REAL NOT NULL CHECK (amount > 0),
-    month TEXT NOT NULL UNIQUE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create indexes for better performance
-CREATE INDEX idx_expenses_date ON expenses(date);
-CREATE INDEX idx_expenses_category ON expenses(category);
-CREATE INDEX idx_expenses_payment_type ON expenses(payment_type);
-CREATE INDEX idx_budget_month ON budget(month);
-
--- Sample queries for common operations
-
--- Insert new expense
-INSERT INTO expenses (amount, description, category, payment_type, date) 
-VALUES (50.25, 'Grocery shopping', 'Food', 'Credit Card', '2024-03-15');
-
--- Set monthly budget
-INSERT INTO budget (amount, month) 
-VALUES (1000.00, strftime('%Y-%m', 'now', 'localtime'))
-ON CONFLICT(month) DO UPDATE SET amount = excluded.amount;
-
--- Get expenses for current month
-SELECT * FROM expenses 
-WHERE strftime('%Y-%m', date) = strftime('%Y-%m', 'now', 'localtime')
-ORDER BY date DESC;
-
--- Get total expenses by category for current month
-SELECT category, SUM(amount) as total
-FROM expenses 
-WHERE strftime('%Y-%m', date) = strftime('%Y-%m', 'now', 'localtime')
-GROUP BY category;
-
--- Get total expenses by payment type for current month
-SELECT payment_type, SUM(amount) as total
-FROM expenses 
-WHERE strftime('%Y-%m', date) = strftime('%Y-%m', 'now', 'localtime')
-GROUP BY payment_type;
-
--- Get current month's budget and total expenses
-SELECT 
-    b.amount as budget,
-    COALESCE(SUM(e.amount), 0) as spent,
-    b.amount - COALESCE(SUM(e.amount), 0) as remaining
-FROM budget b
-LEFT JOIN expenses e ON strftime('%Y-%m', e.date) = b.month
-WHERE b.month = strftime('%Y-%m', 'now', 'localtime')
-GROUP BY b.month, b.amount;
-
--- Search expenses
-SELECT * FROM expenses
-WHERE description LIKE '%search_term%'
-   OR category LIKE '%search_term%'
-ORDER BY date DESC;
-
--- Update expense
-UPDATE expenses 
-SET amount = 45.50,
-    description = 'Updated description',
-    category = 'Food',
-    payment_type = 'Cash'
-WHERE id = 1;
-
--- Delete expense
-DELETE FROM expenses WHERE id = 1;
-
--- Get paginated expenses
-SELECT * FROM expenses
-ORDER BY date DESC
-LIMIT 15 OFFSET 0;  -- Change offset for different pages
-
--- Get total number of expenses (for pagination)
-SELECT COUNT(*) FROM expenses;
-
--- Get expenses filtered by category
-SELECT * FROM expenses
-WHERE category = 'Food'
-ORDER BY date DESC;
-
--- Get monthly totals for the current year
-SELECT 
-    strftime('%Y-%m', date) as month,
-    SUM(amount) as total
-FROM expenses
-WHERE strftime('%Y', date) = strftime('%Y', 'now', 'localtime')
-GROUP BY strftime('%Y-%m', date)
-ORDER BY month DESC;
