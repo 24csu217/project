@@ -903,3 +903,45 @@ static void add_date_filter(AppData *app, GtkWidget *main_box) {
     
     gtk_box_pack_start(GTK_BOX(main_box), date_box, FALSE, FALSE, 5);
 }
+
+
+
+
+
+
+
+
+      |         ^
+      |         ;
+ 1041 | // Function to add expense to the database
+ 1042 | void add_expense(const char *description, const char *category, const char *payment_type, double amount) {
+      | ~~~~
+main.c:1042:6: error: redefinition of 'add_expense'
+ 1042 | void add_expense(const char *description, const char *category, const char *payment_type, double amount) {
+      |      ^~~~~~~~~~~
+main.c:328:6: note: previous definition of 'add_expense' with type 'void(const char *, const char *, const char *, double)'
+  328 | void add_expense(const char *description, const char *category, const char *payment_type, double amount) {
+      |      ^~~~~~~~~~~
+main.c:1071:6: error: redefinition of 'on_add_expense_button_clicked'
+ 1071 | void on_add_expense_button_clicked(GtkWidget *widget, gpointer data) {
+      |      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+main.c:306:6: note: previous definition of 'on_add_expense_button_clicked' with type 'void(GtkWidget *, void *)' {aka 'void(struct _GtkWidget *, void *)'}
+  306 | void on_add_expense_button_clicked(GtkWidget *widget, gpointer data) {
+      |      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+tanus@Tanush MINGW64 /c/Users/tanus/Desktop/c
+$  gcc main.c -o expense_tracker `pkg-config --cflags --libs gtk+-3.0` -lsqlite3
+main.c:20:16: error: duplicate member 'search_entry'
+   20 |     GtkWidget *search_entry;     // Search bar
+      |                ^~~~~~~~~~~~
+main.c: In function 'draw_category_chart':
+main.c:760:27: error: 'M_PI' undeclared (first use in this function); did you mean 'G_PI'?
+  760 |     double start_angle = -M_PI / 2;
+      |                           ^~~~
+      |                           G_PI
+main.c:760:27: note: each undeclared identifier is reported only once for each function it appears in
+main.c: In function 'draw_payment_chart':
+main.c:840:27: error: 'M_PI' undeclared (first use in this function); did you mean 'G_PI'?
+  840 |     double start_angle = -M_PI / 2;
+      |                           ^~~~
+      |                           G_PI
