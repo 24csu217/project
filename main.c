@@ -73,7 +73,7 @@ static void update_budget_progress(AppData *app);
 static void init_analytics_section(AppData *app, GtkWidget *main_box);
 static gboolean draw_category_chart(GtkWidget *widget, cairo_t *cr, AppData *app);
 static gboolean draw_payment_chart(GtkWidget *widget, cairo_t *cr, AppData *app);
-static void add_date_filter(AppData *app, GtkWidget *main_box);
+static void init_form_section(AppData *app, GtkWidget *main_box);
 
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
@@ -90,46 +90,6 @@ int main(int argc, char *argv[]) {
     GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_container_add(GTK_CONTAINER(app.window), main_box);
 
-    // Create form section
-    GtkWidget *form_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-    
-    // Amount entry
-    app.amount_entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(app.amount_entry), "Amount");
-    
-    // Description entry
-    app.description_entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(app.description_entry), "Description");
-    
-    // Category dropdown
-    app.category_combo = gtk_combo_box_text_new();
-    const char *categories[] = {"Food", "Transport", "Entertainment", "Bills", "Others"};
-    for (int i = 0; i < 5; i++) {
-        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(app.category_combo), categories[i]);
-    }
-    
-    // Payment type dropdown
-    app.payment_type_combo = gtk_combo_box_text_new();
-    const char *payment_types[] = {"Cash", "Credit Card", "Debit Card", "UPI"};
-    for (int i = 0; i < 4; i++) {
-        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(app.payment_type_combo), payment_types[i]);
-    }
-    
-    // Add expense button
-    GtkWidget *add_button = gtk_button_new_with_label("Add Expense");
-    GtkStyleContext *context = gtk_widget_get_style_context(add_button);
-    gtk_style_context_add_class(context, "suggested-action");
-    
-    // Pack form elements
-    gtk_box_pack_start(GTK_BOX(form_box), app.amount_entry, TRUE, TRUE, 5);
-    gtk_box_pack_start(GTK_BOX(form_box), app.description_entry, TRUE, TRUE, 5);
-    gtk_box_pack_start(GTK_BOX(form_box), app.category_combo, TRUE, TRUE, 5);
-    gtk_box_pack_start(GTK_BOX(form_box), app.payment_type_combo, TRUE, TRUE, 5);
-    gtk_box_pack_start(GTK_BOX(form_box), add_button, FALSE, FALSE, 5);
-    
-    // Add form box to main box
-    gtk_box_pack_start(GTK_BOX(main_box), form_box, FALSE, FALSE, 5);
-
     // Initialize database
     if (sqlite3_open("expenses.db", &app.db) != SQLITE_OK) {
         g_print("Cannot open database: %s\n", sqlite3_errmsg(app.db));
@@ -137,14 +97,24 @@ int main(int argc, char *argv[]) {
     }
     init_database(app.db);
 
-    // Connect signals
-    g_signal_connect(add_button, "clicked", G_CALLBACK(add_expense), &app);
-    g_signal_connect(app.window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    // Initialize all sections in order
+    init_form_section(&app, main_box);           // Your existing form section
+    init_filter_section(&app, main_box);         // Filter and search section
+    init_expense_table(&app, main_box);          // Expense table with pagination
+    init_budget_section(&app, main_box);         // Budget section
+    init_analytics_section(&app, main_box);      // Pie charts
 
+    // Connect signals
+    g_signal_connect(app.window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    
     // Show all widgets
     gtk_widget_show_all(app.window);
     
-    // Start GTK main loop
+    // Initial update of all components
+    update_expense_list(&app, "All", "");
+    update_budget_progress(&app);
+    update_charts(&app);
+    
     gtk_main();
     
     // Cleanup
@@ -153,29 +123,83 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-// Initialize database tables
+// Add this function to initialize the database tables
 static void init_database(sqlite3 *db) {
     char *err_msg = 0;
-    const char *sql = 
+    
+    // Create expenses table
+    const char *sql_expenses = 
         "CREATE TABLE IF NOT EXISTS expenses ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "amount REAL NOT NULL,"
         "description TEXT,"
         "category TEXT NOT NULL,"
         "payment_type TEXT NOT NULL,"
-        "date DATETIME NOT NULL"
-        ");"
+        "date TEXT NOT NULL"
+        ");";
+    
+    // Create budget table
+    const char *sql_budget = 
         "CREATE TABLE IF NOT EXISTS budget ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "amount REAL NOT NULL,"
         "month TEXT NOT NULL UNIQUE"
         ");";
-
-    int rc = sqlite3_exec(db, sql, 0, 0, &err_msg);
-    if (rc != SQLITE_OK) {
+    
+    if (sqlite3_exec(db, sql_expenses, 0, 0, &err_msg) != SQLITE_OK) {
         g_print("SQL error: %s\n", err_msg);
         sqlite3_free(err_msg);
     }
+    
+    if (sqlite3_exec(db, sql_budget, 0, 0, &err_msg) != SQLITE_OK) {
+        g_print("SQL error: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    }
+}
+
+// Add this function to initialize the form section
+static void init_form_section(AppData *app, GtkWidget *main_box) {
+    GtkWidget *form_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    
+    // Amount entry
+    app->amount_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(app->amount_entry), "Amount");
+    
+    // Description entry
+    app->description_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(app->description_entry), "Description");
+    
+    // Category dropdown
+    app->category_combo = gtk_combo_box_text_new();
+    const char *categories[] = {"Food", "Transport", "Entertainment", "Bills", "Others"};
+    for (int i = 0; i < 5; i++) {
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(app->category_combo), categories[i]);
+    }
+    
+    // Payment type dropdown
+    app->payment_type_combo = gtk_combo_box_text_new();
+    const char *payment_types[] = {"Cash", "Credit Card", "Debit Card", "UPI"};
+    for (int i = 0; i < 4; i++) {
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(app->payment_type_combo), payment_types[i]);
+    }
+    
+    // Add expense button
+    GtkWidget *add_button = gtk_button_new_with_label("Add Expense");
+    GtkStyleContext *context = gtk_widget_get_style_context(add_button);
+    gtk_style_context_add_class(context, "suggested-action");
+    
+    // Pack form elements
+    gtk_box_pack_start(GTK_BOX(form_box), app->amount_entry, TRUE, TRUE, 5);
+    gtk_box_pack_start(GTK_BOX(form_box), app->description_entry, TRUE, TRUE, 5);
+    gtk_box_pack_start(GTK_BOX(form_box), app->category_combo, TRUE, TRUE, 5);
+    gtk_box_pack_start(GTK_BOX(form_box), app->payment_type_combo, TRUE, TRUE, 5);
+    gtk_box_pack_start(GTK_BOX(form_box), add_button, FALSE, FALSE, 5);
+    
+    // Connect add button signal
+    g_signal_connect(add_button, "clicked", G_CALLBACK(add_expense), app);
+    
+    // Add form box to main box
+    gtk_box_pack_start(GTK_BOX(main_box), form_box, FALSE, FALSE, 5);
 }
 
 static void add_expense(GtkButton *button, AppData *app) {
@@ -903,45 +927,3 @@ static void add_date_filter(AppData *app, GtkWidget *main_box) {
     
     gtk_box_pack_start(GTK_BOX(main_box), date_box, FALSE, FALSE, 5);
 }
-
-
-
-
-
-
-
-
-      |         ^
-      |         ;
- 1041 | // Function to add expense to the database
- 1042 | void add_expense(const char *description, const char *category, const char *payment_type, double amount) {
-      | ~~~~
-main.c:1042:6: error: redefinition of 'add_expense'
- 1042 | void add_expense(const char *description, const char *category, const char *payment_type, double amount) {
-      |      ^~~~~~~~~~~
-main.c:328:6: note: previous definition of 'add_expense' with type 'void(const char *, const char *, const char *, double)'
-  328 | void add_expense(const char *description, const char *category, const char *payment_type, double amount) {
-      |      ^~~~~~~~~~~
-main.c:1071:6: error: redefinition of 'on_add_expense_button_clicked'
- 1071 | void on_add_expense_button_clicked(GtkWidget *widget, gpointer data) {
-      |      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-main.c:306:6: note: previous definition of 'on_add_expense_button_clicked' with type 'void(GtkWidget *, void *)' {aka 'void(struct _GtkWidget *, void *)'}
-  306 | void on_add_expense_button_clicked(GtkWidget *widget, gpointer data) {
-      |      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-tanus@Tanush MINGW64 /c/Users/tanus/Desktop/c
-$  gcc main.c -o expense_tracker `pkg-config --cflags --libs gtk+-3.0` -lsqlite3
-main.c:20:16: error: duplicate member 'search_entry'
-   20 |     GtkWidget *search_entry;     // Search bar
-      |                ^~~~~~~~~~~~
-main.c: In function 'draw_category_chart':
-main.c:760:27: error: 'M_PI' undeclared (first use in this function); did you mean 'G_PI'?
-  760 |     double start_angle = -M_PI / 2;
-      |                           ^~~~
-      |                           G_PI
-main.c:760:27: note: each undeclared identifier is reported only once for each function it appears in
-main.c: In function 'draw_payment_chart':
-main.c:840:27: error: 'M_PI' undeclared (first use in this function); did you mean 'G_PI'?
-  840 |     double start_angle = -M_PI / 2;
-      |                           ^~~~
-      |                           G_PI
