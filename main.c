@@ -33,6 +33,8 @@ typedef struct {
     GtkTreeSelection *selection;
     gint selected_expense_id;
     GtkTreeIter selected_iter;
+    GtkWidget *edit_button;
+    GtkWidget *delete_button;
 } AppData;
 
 // Color definitions for pie charts
@@ -488,6 +490,31 @@ static void init_expense_table(AppData *app, GtkWidget *main_box) {
 
     // Initial load of expenses
     update_expense_list(app, "All", "");
+
+    // Create buttons box
+    GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_box_pack_start(GTK_BOX(main_box), button_box, FALSE, FALSE, 5);
+
+    // Create edit and delete buttons
+    app->edit_button = gtk_button_new_with_label("Edit");
+    app->delete_button = gtk_button_new_with_label("Delete");
+    
+    // Initially disable buttons
+    gtk_widget_set_sensitive(app->edit_button, FALSE);
+    gtk_widget_set_sensitive(app->delete_button, FALSE);
+
+    // Style delete button
+    GtkStyleContext *delete_context = gtk_widget_get_style_context(app->delete_button);
+    gtk_style_context_add_class(delete_context, "destructive-action");
+
+    // Pack buttons
+    gtk_box_pack_end(GTK_BOX(button_box), app->delete_button, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(button_box), app->edit_button, FALSE, FALSE, 0);
+
+    // Connect signals
+    g_signal_connect(app->selection, "changed", G_CALLBACK(on_expense_selected), app);
+    g_signal_connect(app->edit_button, "clicked", G_CALLBACK(edit_expense), app);
+    g_signal_connect(app->delete_button, "clicked", G_CALLBACK(delete_expense), app);
 }
 
 static void prev_page(GtkButton *button, AppData *app) {
