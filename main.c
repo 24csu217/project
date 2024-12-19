@@ -33,8 +33,6 @@ typedef struct {
     GtkTreeSelection *selection;
     gint selected_expense_id;
     GtkTreeIter selected_iter;
-    GtkWidget *edit_button;
-    GtkWidget *delete_button;
 } AppData;
 
 // Color definitions for pie charts
@@ -84,6 +82,8 @@ static void edit_expense(GtkButton *button, AppData *app);
 static void delete_expense(GtkButton *button, AppData *app);
 static void reset_selection(AppData *app);
 static void on_expense_selected(GtkTreeSelection *selection, AppData *app);
+static void on_edit_clicked(GtkCellRendererPixbuf *renderer, gchar *path, AppData *app);
+static void on_delete_clicked(GtkCellRendererPixbuf *renderer, gchar *path, AppData *app);
 
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
@@ -337,59 +337,41 @@ static void search_changed(GtkSearchEntry *entry, AppData *app) {
 }
 
 static void update_expense_list(AppData *app, const gchar *category, const gchar *search_text) {
-    const char *base_sql;
-    if (g_strcmp0(category, "All") == 0) {
-        base_sql = "SELECT id, amount, description, category, payment_type, date "
-                  "FROM expenses WHERE (description LIKE ? OR category LIKE ?) "
-                  "ORDER BY date DESC LIMIT ? OFFSET ?";
-    } else {
-        base_sql = "SELECT id, amount, description, category, payment_type, date "
-                  "FROM expenses WHERE category = ? AND (description LIKE ?) "
-                  "ORDER BY date DESC LIMIT ? OFFSET ?";
-    }
-
-    sqlite3_stmt *stmt;
-    if (sqlite3_prepare_v2(app->db, base_sql, -1, &stmt, NULL) != SQLITE_OK) {
-        g_print("Failed to prepare statement: %s\n", sqlite3_errmsg(app->db));
-        return;
-    }
-
-    // Clear existing list store
     gtk_list_store_clear(app->expense_store);
-
-    // Bind parameters
-    char search_pattern[256];
-    g_snprintf(search_pattern, sizeof(search_pattern), "%%%s%%", search_text ? search_text : "");
     
-    int param_index = 1;
-    if (g_strcmp0(category, "All") == 0) {
-        sqlite3_bind_text(stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
-    } else {
-        sqlite3_bind_text(stmt, param_index++, category, -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, param_index++, search_pattern, -1, SQLITE_STATIC);
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT id, amount, description, category, payment_type, date "
+                     "FROM expenses WHERE (description LIKE ? OR category LIKE ?) "
+                     "ORDER BY date DESC";
+    
+    if (sqlite3_prepare_v2(app->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        char search_pattern[256];
+        g_snprintf(search_pattern, sizeof(search_pattern), "%%%s%%", 
+                  search_text ? search_text : "");
+        
+        sqlite3_bind_text(stmt, 1, search_pattern, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, search_pattern, -1, SQLITE_STATIC);
+        
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            GtkTreeIter iter;
+            gtk_list_store_append(app->expense_store, &iter);
+            
+            char amount_str[32];
+            snprintf(amount_str, sizeof(amount_str), "%.2f", 
+                    sqlite3_column_double(stmt, 1));
+            
+            gtk_list_store_set(app->expense_store, &iter,
+                0, sqlite3_column_int(stmt, 0),     // ID
+                1, amount_str,                      // Amount
+                2, sqlite3_column_text(stmt, 2),    // Description
+                3, sqlite3_column_text(stmt, 3),    // Category
+                4, sqlite3_column_text(stmt, 4),    // Payment Type
+                5, sqlite3_column_text(stmt, 5),    // Date
+                -1);
+        }
+        
+        sqlite3_finalize(stmt);
     }
-
-    const int items_per_page = 15;
-    int offset = (app->current_page - 1) * items_per_page;
-    sqlite3_bind_int(stmt, param_index++, items_per_page);
-    sqlite3_bind_int(stmt, param_index++, offset);
-
-    // Populate list store
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        GtkTreeIter iter;
-        gtk_list_store_append(app->expense_store, &iter);
-        gtk_list_store_set(app->expense_store, &iter,
-            0, sqlite3_column_int(stmt, 0),    // ID
-            1, sqlite3_column_text(stmt, 1),   // amount
-            2, sqlite3_column_text(stmt, 2),   // description
-            3, sqlite3_column_text(stmt, 3),   // category
-            4, sqlite3_column_text(stmt, 4),   // payment_type
-            5, sqlite3_column_text(stmt, 5),   // date
-            -1);
-    }
-
-    sqlite3_finalize(stmt);
 }
 
 static void export_to_excel(GtkButton *button, AppData *app) {
@@ -436,85 +418,126 @@ static void export_to_excel(GtkButton *button, AppData *app) {
 }
 
 static void init_expense_table(AppData *app, GtkWidget *main_box) {
-    // Create a scrolled window to contain the table
-    GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window),
+    // Create frame and container
+    GtkWidget *frame = gtk_frame_new("Expenses");
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_container_add(GTK_CONTAINER(frame), vbox);
+
+    // Create scrolled window
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                  GTK_POLICY_AUTOMATIC,
                                  GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_size_request(scrolled_window, -1, 300);
+    gtk_widget_set_size_request(scroll, -1, 300);
+    gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
 
-    // Create list store with ID column (hidden)
-    app->expense_store = gtk_list_store_new(6,  // 6 columns instead of 5
+    // Create list store with additional column for storing ID
+    app->expense_store = gtk_list_store_new(7,
         G_TYPE_INT,     // ID (hidden)
         G_TYPE_STRING,  // Amount
         G_TYPE_STRING,  // Description
         G_TYPE_STRING,  // Category
         G_TYPE_STRING,  // Payment Type
-        G_TYPE_STRING   // Date
+        G_TYPE_STRING,  // Date
+        G_TYPE_STRING   // Actions (will be rendered as buttons)
     );
 
     // Create tree view
     app->expense_table = gtk_tree_view_new_with_model(GTK_TREE_MODEL(app->expense_store));
+    gtk_container_add(GTK_CONTAINER(scroll), app->expense_table);
 
-    // Create columns (ID column is not displayed)
-    const char *titles[] = {"Amount", "Description", "Category", "Payment Type", "Date"};
+    // Create columns
+    const char *titles[] = {"Amount", "Description", "Category", "Payment Type", "Date", "Actions"};
     for (int i = 0; i < 5; i++) {
         GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
         GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes(
-            titles[i], renderer, "text", i + 1, NULL);  // i + 1 because ID is column 0
+            titles[i], renderer, "text", i + 1, NULL);
         gtk_tree_view_column_set_resizable(column, TRUE);
         gtk_tree_view_append_column(GTK_TREE_VIEW(app->expense_table), column);
     }
 
-    // Add table to scrolled window
-    gtk_container_add(GTK_CONTAINER(scrolled_window), app->expense_table);
-
-    // Create pagination controls
-    app->pagination_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-    app->prev_button = gtk_button_new_with_label("Previous");
-    app->next_button = gtk_button_new_with_label("Next");
-    app->page_label = gtk_label_new("Page 1");
-    app->current_page = 1;
-
-    gtk_box_pack_start(GTK_BOX(app->pagination_box), app->prev_button, FALSE, FALSE, 5);
-    gtk_box_pack_start(GTK_BOX(app->pagination_box), app->page_label, FALSE, FALSE, 5);
-    gtk_box_pack_start(GTK_BOX(app->pagination_box), app->next_button, FALSE, FALSE, 5);
-
-    // Add to main box
-    gtk_box_pack_start(GTK_BOX(main_box), scrolled_window, TRUE, TRUE, 5);
-    gtk_box_pack_start(GTK_BOX(main_box), app->pagination_box, FALSE, FALSE, 5);
-
-    // Connect pagination signals
-    g_signal_connect(app->prev_button, "clicked", G_CALLBACK(prev_page), app);
-    g_signal_connect(app->next_button, "clicked", G_CALLBACK(next_page), app);
-
-    // Initial load of expenses
-    update_expense_list(app, "All", "");
-
-    // Create buttons box
-    GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-    gtk_box_pack_start(GTK_BOX(main_box), button_box, FALSE, FALSE, 5);
-
-    // Create edit and delete buttons
-    app->edit_button = gtk_button_new_with_label("Edit");
-    app->delete_button = gtk_button_new_with_label("Delete");
+    // Create action column with buttons
+    GtkTreeViewColumn *action_column = gtk_tree_view_column_new();
+    gtk_tree_view_column_set_title(action_column, "Actions");
     
-    // Initially disable buttons
-    gtk_widget_set_sensitive(app->edit_button, FALSE);
-    gtk_widget_set_sensitive(app->delete_button, FALSE);
+    // Create edit button renderer
+    GtkCellRenderer *edit_renderer = gtk_cell_renderer_pixbuf_new();
+    g_object_set(edit_renderer, 
+        "icon-name", "document-edit-symbolic",
+        "stock-size", GTK_ICON_SIZE_SMALL_TOOLBAR,
+        NULL);
+    g_signal_connect(edit_renderer, "activate", G_CALLBACK(on_edit_clicked), app);
+    gtk_tree_view_column_pack_start(action_column, edit_renderer, FALSE);
 
-    // Style delete button
-    GtkStyleContext *delete_context = gtk_widget_get_style_context(app->delete_button);
-    gtk_style_context_add_class(delete_context, "destructive-action");
+    // Create delete button renderer
+    GtkCellRenderer *delete_renderer = gtk_cell_renderer_pixbuf_new();
+    g_object_set(delete_renderer, 
+        "icon-name", "edit-delete-symbolic",
+        "stock-size", GTK_ICON_SIZE_SMALL_TOOLBAR,
+        NULL);
+    g_signal_connect(delete_renderer, "activate", G_CALLBACK(on_delete_clicked), app);
+    gtk_tree_view_column_pack_start(action_column, delete_renderer, FALSE);
 
-    // Pack buttons
-    gtk_box_pack_end(GTK_BOX(button_box), app->delete_button, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(button_box), app->edit_button, FALSE, FALSE, 0);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(app->expense_table), action_column);
 
-    // Connect signals
-    g_signal_connect(app->selection, "changed", G_CALLBACK(on_expense_selected), app);
-    g_signal_connect(app->edit_button, "clicked", G_CALLBACK(edit_expense), app);
-    g_signal_connect(app->delete_button, "clicked", G_CALLBACK(delete_expense), app);
+    gtk_box_pack_start(GTK_BOX(main_box), frame, TRUE, TRUE, 0);
+}
+
+// Callback for edit button clicks
+static void on_edit_clicked(GtkCellRendererPixbuf *renderer, gchar *path, AppData *app) {
+    GtkTreePath *tree_path = gtk_tree_path_new_from_string(path);
+    GtkTreeIter iter;
+    gint id;
+    
+    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(app->expense_store), &iter, tree_path)) {
+        gtk_tree_model_get(GTK_TREE_MODEL(app->expense_store), &iter, 0, &id, -1);
+        show_edit_dialog(app, id, iter);
+    }
+    
+    gtk_tree_path_free(tree_path);
+}
+
+// Callback for delete button clicks
+static void on_delete_clicked(GtkCellRendererPixbuf *renderer, gchar *path, AppData *app) {
+    GtkTreePath *tree_path = gtk_tree_path_new_from_string(path);
+    GtkTreeIter iter;
+    gint id;
+    
+    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(app->expense_store), &iter, tree_path)) {
+        gtk_tree_model_get(GTK_TREE_MODEL(app->expense_store), &iter, 0, &id, -1);
+        
+        // Show confirmation dialog
+        GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(app->window),
+            GTK_DIALOG_MODAL,
+            GTK_MESSAGE_QUESTION,
+            GTK_BUTTONS_YES_NO,
+            "Are you sure you want to delete this expense?");
+
+        if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_YES) {
+            // Delete from database
+            sqlite3_stmt *stmt;
+            const char *sql = "DELETE FROM expenses WHERE id = ?";
+            
+            if (sqlite3_prepare_v2(app->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_int(stmt, 1, id);
+                
+                if (sqlite3_step(stmt) == SQLITE_DONE) {
+                    // Remove from tree view
+                    gtk_list_store_remove(app->expense_store, &iter);
+                    
+                    // Update displays
+                    update_budget_progress(app);
+                    update_charts(app);
+                }
+                
+                sqlite3_finalize(stmt);
+            }
+        }
+        
+        gtk_widget_destroy(dialog);
+    }
+    
+    gtk_tree_path_free(tree_path);
 }
 
 static void prev_page(GtkButton *button, AppData *app) {
